@@ -1,0 +1,53 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "starspikes"
+version = "0.1.0"
+description = "Identify stellar diffraction spikes and mask them."
+readme = "README.md"
+requires-python = ">=3.7"
+license = {file = "LICENSE"}
+keywords = ["astronomy", "photometry", "stars"]
+authors = [
+ {name = "Maurizio D'Addona"},
+ {email = "mauritiusdadd@gmail.com"}
+]
+maintainers = [
+ {name = "Maurizio D'Addona"},
+ {email = "mauritiusdadd@gmail.com"}
+]
+classifiers = [
+        # How mature is this project? Common values are
+        #   3 - Alpha
+        #   4 - Beta
+        #   5 - Production/Stable
+        "Development Status :: 3 - Alpha",
+        # Indicate who your project is intended for
+        "Intended Audience :: Science/Research",
+        "Topic :: Multimedia :: Graphics :: Graphics Conversion",
+        # Specify the Python versions you support here. In particular, ensure
+        # that you indicate whether you support Python 2, Python 3 or both.
+        "Programming Language :: Python :: 3",
+]
+
+dependencies = [
+    "numpy",
+    "scipy",
+    "astropy",
+    "matplotlib",
+    "regions",
+]
+
+[project.optional-dependencies]
+test = [
+  "pytest",
+]
+
+[project.urls]
+#documentation = ""
+repository = "https://github.com/mauritiusdadd/python-starspikes"
+
+[project.scripts]
+spikesmask = "starspikes.masking:main"
