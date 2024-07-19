@@ -27,8 +27,8 @@ from astropy.wcs import WCS
 from astropy.stats import sigma_clipped_stats
 from astropy.table import Table
 
-from . import zeropoints
-from . import utils
+from starspikes import zeropoints
+from starspikes import utils
 
 
 def findobjectcenter(img, approx_star_center, cutout_size=128,
@@ -464,7 +464,7 @@ def getspikesize(cutout, spike_data):
 
 def getmagpartition(catalog, figsize=(20, 15),
                     magauto_key='MAG_AUTO', mumax_key='MU_MAX',
-                    star_key='CLASS_STAR', max_mag_treshold=40):
+                    max_mag_treshold=40):
 
     catalog = catalog[catalog[magauto_key] < max_mag_treshold]
 
@@ -508,6 +508,7 @@ def getmagpartition(catalog, figsize=(20, 15),
     )
 
     # fit the data with the fitter
+    logging.info("Fitting the star sequnce...")
     fitted_line = fitter(
         model=mymodel,
         x=catalog[magauto_key],
@@ -555,6 +556,12 @@ def __argsHandler(options=None):
         '--img-hdu', metavar='IMG_HDU', type=int, default=1,
         help='The HDU containing the image data to use. If this argument '
         'is not specified, the image is loaded from the first HDU.'
+    )
+
+    parser.add_argument(
+        '--angle', metavar='ANGLE', type=float, default=None,
+        help='The angle of the main spike. If sepcified, spike detection from '
+        'image is not performed and this value is used for the main spike.'
     )
 
     parser.add_argument(
@@ -617,6 +624,12 @@ def __argsHandler(options=None):
         help='Set the max distance, in pixels, between two objects to be '
         'considered the same. If it is not specified, this parameter will have'
         ' a default value of %(metavar)s=%(default)d.'
+    )
+
+    parser.add_argument(
+        '--class-star-thresh', type=float, default=0.8,
+        help='If set to a value greater than zero, then fits the star sequence'
+             ' in the plane MAG_AUTO, MU_MAX'
     )
 
     parser.add_argument(
@@ -794,7 +807,7 @@ def main(options=None):
         logging.error(f"Invalid catalog: {str(exc)}")
         sys.exit(1)
     else:
-        cat = cat[cat[args.magauto_key] < args.magauto_thresh]
+        cat = cat[cat[args.magauto_key] < 90]
 
     logging.info(f"Loading image {args.input_image[0]}")
     try:
@@ -841,72 +854,81 @@ def main(options=None):
     )
     # Detecting stars
 
-    class_star_thresh = 0.8
-
-    only_stars = cat[cat[args.class_key] >= class_star_thresh]
-    params, ax, fig = getmagpartition(
-        only_stars,
-        magauto_key=args.magauto_key,
-        mumax_key=args.mumax_key,
-        star_key=args.class_key,
-        max_mag_treshold=40,
-    )
-
-    print("", file=sys.stderr)
-    logging.info(f"Slope: {params['slope']}")
-    logging.info(f"Intercept: {params['intercept']}")
-    logging.info(f"Saturation MAG_AUTO: {params['sat_mag_auto']}")
-    logging.info(f"Saturation MU_MAX: {params['sat_mu_max']}")
-
-    # Selecting points that are approximately  in the linear region
-    # of the star sequence
-    mag_hi_thresh = params['sat_mag_auto'] + args.mag_delta
-    mumax_hi_thresh = mag_hi_thresh * params['slope'] + params['intercept']
-
-    mask_1 = only_stars[args.magauto_key] >= params['sat_mag_auto']
-    mask_1 &= only_stars[args.mumax_key] <= mumax_hi_thresh
-
-    selected_stars_for_stat = only_stars[mask_1]
-
-    distances = distanceFromLine(
-        selected_stars_for_stat[args.magauto_key],
-        selected_stars_for_stat[args.mumax_key],
-        params['slope'],
-        params['intercept']
-    )
-
-    selection_offset = 5 * np.std(distances)
-    mumax_sat_thresh = params['sat_mu_max'] + selection_offset
-    mumax_hi_thresh += selection_offset
-    intercept_offset = selection_offset
-
-    logging.info(f"Selection offset: {selection_offset}")
-    logging.info(f"MU_MAX saturation threshold: {mumax_sat_thresh}")
-    print("", file=sys.stderr)
-
-    # Mask for selecting saturated objects from the input catalog
-    saturated_mask = cat[args.mumax_key] <= mumax_sat_thresh
-
-    # Mask for selecting brightest non saturated objects from the catalog
-    mumax_thresh_values = cat[args.magauto_key] * params['slope']
-    mumax_thresh_values += params['intercept'] + intercept_offset
-    brightest_mask1 = cat[args.mumax_key] <= mumax_thresh_values
-    brightest_mask1 &= cat[args.magauto_key] <= mag_hi_thresh
-
-    brightest_mask2 = cat[args.magauto_key] > mag_hi_thresh
-    brightest_mask2 &= cat[args.mumax_key] <= mumax_hi_thresh
-
-    selection_mask = saturated_mask | brightest_mask1 | brightest_mask2
-    brightest_objects = cat[selection_mask]
-
-    if args.check_images:
-        plt.tight_layout()
-        fig.savefig(
-            os.path.join(chk_img_out, "hough_space.png"),
-            dpi=args.check_dpi
+    mag_thresh_mask = cat[args.magauto_key] <= args.magauto_thresh
+    if args.class_star_thresh > 0:
+        only_stars = cat[
+            mag_thresh_mask &
+            (cat[args.class_key] >= args.class_star_thresh)
+        ]
+        params, ax, fig = getmagpartition(
+            only_stars,
+            magauto_key=args.magauto_key,
+            mumax_key=args.mumax_key,
+            star_key=args.class_key,
+            max_mag_treshold=40,
         )
+        if args.check_images:
+            plt.tight_layout()
+            fig.savefig(
+                os.path.join(chk_img_out, "hough_space.png"),
+                dpi=args.check_dpi
+            )
         plt.close(fig)
 
+        print("", file=sys.stderr)
+        logging.info(f"Slope: {params['slope']}")
+        logging.info(f"Intercept: {params['intercept']}")
+        logging.info(f"Saturation MAG_AUTO: {params['sat_mag_auto']}")
+        logging.info(f"Saturation MU_MAX: {params['sat_mu_max']}")
+
+        # Selecting points that are approximately  in the linear region
+        # of the star sequence
+        mag_hi_thresh = params['sat_mag_auto'] + args.mag_delta
+        mumax_hi_thresh = mag_hi_thresh * params['slope'] + params['intercept']
+
+        mask_1 = only_stars[args.magauto_key] >= params['sat_mag_auto']
+        mask_1 &= only_stars[args.mumax_key] <= mumax_hi_thresh
+
+        selected_stars_for_stat = only_stars[mask_1]
+
+        distances = distanceFromLine(
+            selected_stars_for_stat[args.magauto_key],
+            selected_stars_for_stat[args.mumax_key],
+            params['slope'],
+            params['intercept']
+        )
+
+        selection_offset = 5 * np.std(distances)
+        mumax_sat_thresh = params['sat_mu_max'] + selection_offset
+        mumax_hi_thresh += selection_offset
+        intercept_offset = selection_offset
+
+        logging.info(f"Selection offset: {selection_offset}")
+        logging.info(f"MU_MAX saturation threshold: {mumax_sat_thresh}")
+        print("", file=sys.stderr)
+
+        # Mask for selecting saturated objects from the input catalog
+        saturated_mask = cat[args.mumax_key] <= mumax_sat_thresh
+
+        # Mask for selecting brightest non saturated objects from the catalog
+        mumax_thresh_values = cat[args.magauto_key] * params['slope']
+        mumax_thresh_values += params['intercept'] + intercept_offset
+        brightest_mask1 = cat[args.mumax_key] <= mumax_thresh_values
+        brightest_mask1 &= cat[args.magauto_key] <= mag_hi_thresh
+
+        brightest_mask2 = cat[args.magauto_key] > mag_hi_thresh
+        brightest_mask2 &= cat[args.mumax_key] <= mumax_hi_thresh
+
+        selection_mask = saturated_mask | brightest_mask1 | brightest_mask2
+    else:
+        selection_mask = mag_thresh_mask
+        selected_stars_for_stat = None
+        params = None
+
+    brightest_objects = cat[selection_mask]
+    logging.info(f"Selected {len(brightest_objects)} sources")
+
+    if args.check_images:
         idx_sorted = np.argsort(cat[args.class_key])
         scatter_marker_size = 15
         fig, ax = plt.subplots(1, 1, figsize=(10, 8))
@@ -937,22 +959,25 @@ def main(options=None):
         )
 
         plt.margins(0.05, 0.05)
-
+        fit_lw = 1.5
         if args.debug:
-            _ = ax.scatter(
-                selected_stars_for_stat[args.magauto_key],
-                selected_stars_for_stat[args.mumax_key],
-                marker='+',
-                s=80,
-                label='Star selected for stats computation',
-                zorder=3
-            )
-            ax.axhline(
-                params['sat_mag_auto'], lw=1, ls='--', c='gray', alpha=0.5
-            )
-            ax.axhline(
-                mag_hi_thresh, lw=1, ls='--', c='gray', alpha=0.5
-            )
+            if selected_stars_for_stat is not None:
+                _ = ax.scatter(
+                    selected_stars_for_stat[args.magauto_key],
+                    selected_stars_for_stat[args.mumax_key],
+                    marker='+',
+                    s=80,
+                    label='Star selected for stats computation',
+                    zorder=3
+                )
+
+            if params is not None:
+                ax.axhline(
+                    params['sat_mag_auto'], lw=1, ls='--', c='gray', alpha=0.5
+                )
+                ax.axhline(
+                    mag_hi_thresh, lw=1, ls='--', c='gray', alpha=0.5
+                )
 
         ax.set_xlabel(fr"{args.magauto_key} [$mag$]")
         ax.set_ylabel(fr"{args.mumax_key} [$mag \cdot arcsec^{{-2}}$]")
@@ -971,71 +996,79 @@ def main(options=None):
         x_min = ax.get_xlim()[0]
         x_max = ax.get_xlim()[1]
 
-        y_max = x_max*params['slope'] + params['intercept']
-
-        # Plotting star sequence fit
-        fit_lw = 1.5
-        ax.plot(
-            (x_min, params['sat_mag_auto']),
-            (params['sat_mu_max'], params['sat_mu_max']),
-            color='magenta',
-            ls='-',
-            lw=fit_lw,
-            alpha=0.5
-        )
-
-        ax.plot(
-            (params['sat_mag_auto'], x_max),
-            (
-                params['sat_mu_max'],
-                y_max
-            ),
-            color='magenta',
-            ls='-',
-            lw=fit_lw,
-            label='Fitted star sequence',
-            alpha=0.5
-        )
-
-        # Plot brightest and saturated objects selection region
-        sel_boundary_lw = 1.5
-        ax.plot(
-            (x_min, params['sat_mag_auto']),
-            (mumax_sat_thresh, mumax_sat_thresh),
-            color='red',
-            ls='--',
-            lw=sel_boundary_lw
-        )
-
-        ax.plot(
-            (params['sat_mag_auto'], mag_hi_thresh),
-            (mumax_sat_thresh, mumax_hi_thresh),
-            color='red',
-            ls='--',
-            lw=sel_boundary_lw,
-        )
-
-        ax.plot(
-            (mag_hi_thresh, x_max),
-            (mumax_hi_thresh, mumax_hi_thresh),
-            color='red',
-            ls='--',
-            lw=sel_boundary_lw,
-            label='Stars selection region boundary'
-        )
-
-        _ = ax.annotate(
-            '$x_{sat}$',
-            xy=(params['sat_mag_auto'], 0),
-            xytext=(params['sat_mag_auto'], 0.025),
-            xycoords=ax.get_xaxis_transform(),
-            textcoords=ax.get_xaxis_transform(),
-            fontsize=16,
-            arrowprops=dict(
-                facecolor='black',
-                arrowstyle='-'
+        if params is None:
+            ax.axvline(
+                args.magauto_thresh,
+                color='magenta',
+                ls='-',
+                lw=fit_lw,
+                alpha=0.5
             )
-        )
+        else:
+            y_max = x_max*params['slope'] + params['intercept']
+
+            # Plotting star sequence fit
+            ax.plot(
+                (x_min, params['sat_mag_auto']),
+                (params['sat_mu_max'], params['sat_mu_max']),
+                color='magenta',
+                ls='-',
+                lw=fit_lw,
+                alpha=0.5
+            )
+
+            ax.plot(
+                (params['sat_mag_auto'], x_max),
+                (
+                    params['sat_mu_max'],
+                    y_max
+                ),
+                color='magenta',
+                ls='-',
+                lw=fit_lw,
+                label='Fitted star sequence',
+                alpha=0.5
+            )
+
+            # Plot brightest and saturated objects selection region
+            sel_boundary_lw = 1.5
+            ax.plot(
+                (x_min, params['sat_mag_auto']),
+                (mumax_sat_thresh, mumax_sat_thresh),
+                color='red',
+                ls='--',
+                lw=sel_boundary_lw
+            )
+
+            ax.plot(
+                (params['sat_mag_auto'], mag_hi_thresh),
+                (mumax_sat_thresh, mumax_hi_thresh),
+                color='red',
+                ls='--',
+                lw=sel_boundary_lw,
+            )
+
+            ax.plot(
+                (mag_hi_thresh, x_max),
+                (mumax_hi_thresh, mumax_hi_thresh),
+                color='red',
+                ls='--',
+                lw=sel_boundary_lw,
+                label='Stars selection region boundary'
+            )
+
+            _ = ax.annotate(
+                '$x_{sat}$',
+                xy=(params['sat_mag_auto'], 0),
+                xytext=(params['sat_mag_auto'], 0.025),
+                xycoords=ax.get_xaxis_transform(),
+                textcoords=ax.get_xaxis_transform(),
+                fontsize=16,
+                arrowprops=dict(
+                    facecolor='black',
+                    arrowstyle='-'
+                )
+            )
 
         _ = ax.legend()
 
@@ -1044,8 +1077,6 @@ def main(options=None):
             dpi=args.check_dpi
         )
         plt.close(fig)
-
-    logging.info(f"Selected {len(brightest_objects)} sources")
 
     positions = brightest_objects.copy()
 
@@ -1160,21 +1191,9 @@ def main(options=None):
         actual_center = (source[args.yimage_key], source[args.ximage_key])
 
         cutout_size = star_cutout_size
-
-        # Detect objects potentially having spikes
-        detectd_spikes, fig = detectspikes(
-            utils.makecutout(
-                log_img,
-                actual_center,
-                np.array((cutout_size, cutout_size)),
-            ),
-            n_spikes=args.n_spikes
-        )
-
-        # Maybe the cutout is too small, retry with a bigger one
-        while detectd_spikes[0][2] > cutout_size/3:
-            plt.close(fig)
-            cutout_size *= 2
+        source_id = f"{actual_center[1]:04.0f}_{actual_center[0]:04.0f}"
+        if args.angle is None:
+            # Detect objects potentially having spikes
             detectd_spikes, fig = detectspikes(
                 utils.makecutout(
                     log_img,
@@ -1184,21 +1203,48 @@ def main(options=None):
                 n_spikes=args.n_spikes
             )
 
-        source_id = f"{actual_center[1]:04.0f}_{actual_center[0]:04.0f}"
+            # Maybe the cutout is too small, retry with a bigger one
+            while (not detectd_spikes) or (detectd_spikes[0][2] > cutout_size/3):
+                plt.close(fig)
+                cutout_size *= 2
+                detectd_spikes, fig = detectspikes(
+                    utils.makecutout(
+                        log_img,
+                        actual_center,
+                        np.array((cutout_size, cutout_size)),
+                    ),
+                    n_spikes=args.n_spikes
+                )
 
-        # If there are no spikes do nothing for this source
-        for spike in detectd_spikes:
+            # If there are no spikes do nothing for this source
+            for spike in detectd_spikes:
+                valid_spikes.add_row(
+                    [
+                        source_id,
+                        actual_center[1],
+                        actual_center[0],
+                        spike[0],
+                        spike[4],
+                        spike[1],
+                        spike[2],
+                        -99,
+                        spike[3],
+                        source[args.mumax_key],
+                        source[args.magauto_key],
+                    ]
+                )
+        else:
             valid_spikes.add_row(
                 [
                     source_id,
                     actual_center[1],
                     actual_center[0],
-                    spike[0],
-                    spike[4],
-                    spike[1],
-                    spike[2],
+                    args.angle,
+                    args.n_spikes,
+                    np.exp(10.75 - 0.75*source[args.magauto_key]),
+                    np.exp(7 - 0.238*source[args.magauto_key]),
                     -99,
-                    spike[3],
+                    -99,
                     source[args.mumax_key],
                     source[args.magauto_key],
                 ]
@@ -1212,7 +1258,7 @@ def main(options=None):
             )
             plt.close(fig)
 
-    logging.info("")
+    logging.info(f"Valid spikes: {len(valid_spikes)}")
 
     valid_spikes.write(
         os.path.join(chk_img_out, "spikes_detection_ldac.fits"),
@@ -1227,66 +1273,14 @@ def main(options=None):
     # then we consider as real spikes only the ones having an angular position
     # compatible with the median within +- angle_tol_deg
 
-    median_angle = np.median(valid_spikes['ANGLE'])
+    if args.angle is None:
+        median_angle = np.median(valid_spikes['ANGLE'])
+        angle_mask = np.abs(valid_spikes['ANGLE'] - median_angle) <= angle_tol_deg
+        valid_spikes = valid_spikes[angle_mask]
+        valid_spikes['ANGLE'] = median_angle
+    else:
+        valid_spikes['ANGLE'] = args.angle
 
-    angle_mask = np.abs(valid_spikes['ANGLE'] - median_angle) <= angle_tol_deg
-    valid_spikes = valid_spikes[angle_mask]
-    valid_spikes['ANGLE'] = median_angle
-
-    """
-    spikes_chk_img_out = os.path.join(chk_img_out, "spikes_profiles")
-    if args.check_images and not os.path.isdir(spikes_chk_img_out):
-        os.mkdir(spikes_chk_img_out)
-
-    for j, spike in enumerate(valid_spikes):
-        partial_progress = (j+1) / len(valid_spikes)
-        sys.stderr.write(
-            utils.STD_PROGRESS_FMT.format(
-                "Computing spikes length:    ",
-                utils.getpbar(partial_progress, 0.6),
-                partial_progress
-            )
-        )
-        sys.stderr.flush()
-        initial_cutout_size = args.cutout_size
-        cutout = utils.makecutout(
-            log_img,
-            (
-                spike[args.yimage_key],
-                spike[args.ximage_key]
-            ),
-            (
-                initial_cutout_size,
-                initial_cutout_size
-            )
-        )
-
-        fig, spike_size = getspikesize(cutout, spike)
-        count = 10
-        while spike_size is None and count > 0:
-            plt.close(fig)
-            initial_cutout_size *= 2
-            count -= 1
-            cutout = utils.makecutout(
-                log_img,
-                (
-                    spike[args.yimage_key],
-                    spike[args.ximage_key]
-                ),
-                (
-                    initial_cutout_size,
-                    initial_cutout_size
-                )
-            )
-            fig, spike_size = getspikesize(cutout, spike)
-        spike['SPIKE_SIZE'] = spike_size
-
-        if args.check_images:
-            fig.savefig(
-                os.path.join(spikes_chk_img_out, f"{spike['ID']}_spike.png")
-            )
-        plt.close(fig)
-    """
     if args.check_images:
         valid_spikes.write(
             os.path.join(chk_img_out, f"{basename}_spikes.fits"),
@@ -1450,4 +1444,11 @@ def main(options=None):
 
 
 if __name__ == '__main__':
-    main([])
+    main([
+        '--verbose', '--check-images', '--debug',
+        '--magauto-thresh', '23',
+        '--class-star-thresh', '0.1',
+        '--angle', '0.000135672',
+        '/home/daddona/projects/python-starspikes/test/sunburst-f814w_drc_sci.fits',
+        '/home/daddona/projects/python-starspikes/test/sunburst-f814w_perstelle.fits'
+    ])
